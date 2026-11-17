@@ -1,144 +1,136 @@
 # work-handoff
 
-> Hand work off between models and platforms without losing what was already verified.
+在不同模型和平台之间接力，减少不必要的接力成本。
 
-An agent skill for **relay handoff**. When a context window fills up, or you switch from Claude to Codex to DeepSeek, or move from CLI to a web chat, the next agent starts blind. This skill makes it start informed instead.
+一个 Agent Skill。上下文接近上限、更换模型或更换平台时，它把当前状态写进项目里的交接文档，下一个 Agent 读文档即可继续。
 
-Two modes, chosen from what the user says:
+## 接力成本的来源
 
-- **Take over** — you just arrived: find the handoff doc, verify the baseline, report status, then continue.
-- **Hand off** — you're leaving: update the doc in place and generate a paste-ready relay prompt.
+换手本身不产生成本，重复劳动产生成本。常见的有几种：
 
-## The one idea
+| 类型 | 表现 |
+| --- | --- |
+| 重查已核实事实 | 已经用 `file:line` 证明过的结论被再次验证 |
+| 重走已否决方案 | 没有记录否决理由，同一个坑再踩一次 |
+| 上下文重复灌入 | 整段聊天记录被贴过去，有用内容只占少数 |
+| 跨平台丢状态 | 未提交改动、运行中的进程、外部账号信息丢失 |
+| 状态分叉 | 新建 `HANDOFF_V2.md`，与旧文档互相矛盾 |
 
-A handoff document is written for the **next executor**, not for the user. It answers exactly three questions:
+## 两种模式
 
-1. What has already been done?
-2. What was concluded — including what was ruled out?
-3. What happens next?
+skill 按用户的说法判断模式。说继续、接手、换了个模型，进入接手模式；说交接、换模型、保存进度、上下文不够了，进入交棒模式。
 
-Anything else is commentary.
+常见调用：
 
-## Take-over mode
+- 接手：`/work-handoff 接手`，或 `/work-handoff 接手 /path/to/project`
+- 交棒：`/work-handoff 交棒`
+- 只检查文档：`/work-handoff 检查 docs/WORK_HANDOFF.md`
 
-### Find the document first
+## 一、接手模式
 
-Never assume a filename. Priority order:
+### 定位文档
 
-1. A path the user gave you.
-2. `WORK_HANDOFF*.md`, `HANDOFF*.md`, `*交接*.md`, `*handoff*.md` in the working directory and `docs/`.
-3. Links from `AGENTS.md` / `CLAUDE.md` / `README.md`.
+不假设文件名，按以下顺序查找：
+
+1. 用户给出的路径。
+2. 当前目录及 `docs/` 下的 `WORK_HANDOFF*.md`、`HANDOFF*.md`、`*交接*.md`、`*handoff*.md`。
+3. `AGENTS.md`、`CLAUDE.md`、`README.md` 里指向交接文档的链接。
 
 ```bash
 python3 scripts/find_handoff.py .
 ```
 
-If several match, take the most recently modified one that actually contains "current state / next step / verified". If none exists, say so — **do not invent a status** — and offer to create one from the template.
+有多个候选时，取最近修改且含当前状态、下一步、已核实事实的那份。没有找到时，说明项目缺少交接文档，并按模板新建，默认路径 `docs/WORK_HANDOFF.md`。
 
-### Read in order, not end to end
+### 读取顺序
 
-Read the handoff doc in full, but four sections verbatim: **verified facts, measured data, TODO (P0/P1/P2), no-go zones**. Read design docs only for sections relevant to the next step. Read runbooks only when executing the step they describe.
+交接文档读全文，其中四部分逐字读：已核实事实、实测数据、待办（P0/P1/P2）、禁区。技术方案只读与下一步相关的章节，操作手册在执行对应步骤时读。
 
-| Document | Role | How to read |
+| 文档 | 作用 | 读法 |
 | --- | --- | --- |
-| Handoff doc | Starting point: state, facts, TODO | Full |
-| Design doc | Rationale: why, constraints | On demand, relevant sections |
-| Runbook | Actions: exact commands | Step by step, during execution |
+| 交接文档 | 状态、事实、待办 | 全文 |
+| 技术方案 | 为什么这么做、约束 | 按需，相关章节 |
+| 操作手册 | 逐条命令 | 执行时逐步读 |
 
-### Verify the baseline, don't re-investigate facts
+### 核对基线
 
-Run the doc's "first thing on take-over" checklist and report real output: does `git log -1` match the recorded baseline, do tests build and pass, are the artifacts that "should not exist" really absent, do key `grep`s still hold.
+运行文档里的接手检查清单，输出实际结果：`git log -1` 是否等于记录的基线、测试和构建是否通过、说应当不存在的产物是否确实不存在、关键 `grep` 是否仍然成立。
 
-The **verified-facts table is a contract**: a conclusion with `file:line`, URL and date is taken as given. Re-check only when the baseline commit moved, a file was moved or rewritten, or your own observation contradicts it. On contradiction: stop and report. Don't guess and patch.
+已核实事实表按契约处理，带 `file:line`、URL 或日期的结论直接采信。需要复核的情况有三种：基线 commit 变了、文件被移动或重写、观察结果与事实矛盾。出现矛盾时停下报告。
 
-### Report before acting
+### 接手报告
 
-A take-over report of ten lines or fewer:
-
-```
-Baseline: <commit> (matches / does not match the doc)
-Checks:   <actual test / build / check results>
-State:    <one sentence>
-Trusting: <verified facts carried over, a few>
-Next:     <one action + acceptance criterion>
-Risk:     <or "none">
-```
-
-If the next step is already specified, do it right after the report. If it spends money, sends messages, modifies data, deletes files or publishes anything, confirm first.
-
-## Hand-off mode
-
-Trigger it when context is near the limit, when switching models (Claude ↔ GPT/Codex ↔ DeepSeek/GLM), when switching platforms (CLI ↔ desktop ↔ web ↔ IDE plugin), or when a phase ends.
-
-Update the doc **in place** — never create `HANDOFF_V2.md`. Minimum updates: date header, work round (request → action → conclusion → correction, failures included), verified facts with locations, measured data with method and limits, TODO with acceptance criteria, current state, document map, no-go zones.
-
-Then generate the relay prompt for the next platform, and note which documents must travel with it:
+报告不超过十行：
 
 ```
-You are taking over. Working directory: <abs path>. Baseline: <commit>.
-Read first: <handoff doc> (full), then <design doc> sections <...> as needed.
-
-Rules:
-1. Do not re-investigate conclusions in the verified-facts table.
-2. Do not extrapolate measured data; estimates are not measurements.
-3. Do not touch anything in "no-go zones"; do not re-propose rejected options.
-4. Give me a take-over report of ten lines or fewer before acting.
-
-Next goal: <one sentence>.
-Acceptance: <observable result>.
+基线：<commit>（与文档一致 / 不一致）
+检查：<测试 / 构建 / 检查的实际结果>
+状态：<一句话>
+采信：<直接沿用的已核实事实，几条>
+下一步：<一个动作 + 验收标准>
+风险：<没有就写"无">
 ```
 
-Cross-machine handoff also carries `git status` and branch state, untracked artifacts, external state (purchased resources, accounts, open orders), running processes and ports, the last key command and its output, and the **location** of local secrets — path only, never the value.
+下一步在文档里已写明时，报告后直接执行。涉及花钱、发消息、改数据、删文件或对外发布时，先确认。
 
-Platform differences are tabulated in `SKILL.md`: same-machine agents get a path plus a commit; web chats get the documents pasted plus explicit "please run this and paste the output" instructions; same machine with a swapped provider should trust the doc, not the previous chat.
+## 二、交棒模式
 
-### Audit before you leave
+触发时机有四种：上下文接近上限、更换模型（Claude 与 GPT/Codex/DeepSeek/GLM 之间）、更换平台（CLI、桌面端、网页版、IDE 插件之间）、阶段结束。
+
+更新文档时原地修改，不新建 `HANDOFF_V2.md`。需要更新的内容：头部日期、本轮工作（用户要求、做了什么、结论、更正了什么，失败的方案也写）、已核实事实及其位置、实测数据及方法、待办及验收标准、当前状态、文档地图、禁区。
+
+然后生成给下一个平台的接力提示词，并列出需要一并提供的文档：
+
+```
+你是接力者。工作目录：<绝对路径>。基线：<commit>。
+先读：<交接文档>（全文），再按需读 <技术方案> 的 <章节>。
+
+规则：
+1. 交接文档"已核实事实"表中的结论不要重查。
+2. 实测数据不要外推；估算不能当实测。
+3. "禁区"里的事不要做；已否决的方案不要重提。
+4. 先给我 10 行以内的接手报告，再动手。
+
+下一步目标：<一句话>。
+验收标准：<可观测的结果>。
+```
+
+跨机器交接还需要提供：`git status` 和分支状态、未跟踪的生成物、外部状态（已购资源、账号、未完成订单）、运行中的进程和端口、最后一条关键命令及其输出、本地 secrets 的位置（只写路径）。
+
+平台差异在 `SKILL.md` 中有对照表：同机 Agent 给路径和 commit；网页版附上文档，并标注需要用户代跑的命令；同机更换 provider 时以文档为准。
+
+### 交棒前审计
 
 ```bash
-python3 scripts/handoff_audit.py <handoff-doc>
+python3 scripts/handoff_audit.py <交接文档>
 ```
 
-Then the human checklist: current state updated today, exactly one next action with acceptance criteria, every P0 has a concrete action, new facts have locations, measurements have methods and limits, dead ends recorded, no-go zones complete, no secrets.
+审计后人工确认：当前状态是当天更新的、下一步只有一个动作且有验收标准、每个 P0 都有具体动作、新事实都有位置、实测都有方法和局限、走过的弯路已记录、禁区完整、没有密钥。
 
-Final question: **could the next model finish the next step from this document alone, without the chat history?** If not, keep writing.
+最后检查一件事：下一个模型只读这份文档，能否在不知道聊天记录的情况下完成下一步。
 
-## Requirements
+## 依赖
 
-Python 3.8+. No third-party packages. The skill stores no project state and is bound to no project name — state always lives in the project's own handoff document.
+Python 3.8+，无第三方包。skill 本身不保存项目状态，也不绑定项目名，状态保存在项目自己的交接文档里。
 
-## Install
+## 安装
 
 ```bash
 git clone https://github.com/jeremylinnnnn/work-handoff.git \
   ~/.workbuddy-ai/skills/work-handoff
 ```
 
-For Claude Code, clone into `~/.claude/skills/work-handoff` instead.
+Claude Code 的安装路径是 `~/.claude/skills/work-handoff`。
 
-## Layout
+## 目录结构
 
 ```
-SKILL.md                        entry point, both modes, anti-patterns
-references/handoff-template.md  document skeleton
-scripts/find_handoff.py         locate the handoff doc
-scripts/handoff_audit.py        structural audit
+SKILL.md                        入口、两种模式、反模式
+references/handoff-template.md  文档骨架
+scripts/find_handoff.py         定位交接文档
+scripts/handoff_audit.py        结构审计
 ```
 
-## Anti-patterns this skill exists to prevent
+## 许可
 
-| Anti-pattern | Consequence |
-| --- | --- |
-| "90% done" with no acceptance criteria | Next agent doesn't know what's left |
-| Conclusions without `file:line` or URL | Cannot tell if stale, must re-investigate |
-| Chat summary passed off as a handoff | Decisions, rejections and evidence lost |
-| `HANDOFF_V2.md` instead of an update | Two sources of truth, guaranteed divergence |
-| "Keep optimizing" as a TODO | Not actionable |
-| Making the next agent re-verify verified facts | Wasted context, possibly different conclusions |
-| Estimates written as measurements | Decisions built on fake data |
-| "Today / yesterday" instead of absolute dates | Meaningless tomorrow |
-| Tokens or account IDs in the doc | Leak |
-| Failures not recorded | Next agent walks the same dead end |
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT，见 [LICENSE](LICENSE)。
